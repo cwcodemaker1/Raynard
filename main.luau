@@ -1,7 +1,3 @@
--- UIBuilderV4.lua
--- Reusable Roblox/Luau client UI framework.
--- Put this ModuleScript in ReplicatedStorage and require it from a LocalScript.
-
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
