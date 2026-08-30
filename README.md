@@ -1,8 +1,6 @@
 # Raynard
 
-A reusable Roblox/Luau client UI framework with a large built-in control catalog, centralized feedback, state management, themes, localization, custom components, and runtime UI APIs.
-
-This README is the Markdown version of the original documentation site and is written to be understandable even if you have never used Raynard before.
+A reusable Roblox/Luau client UI framework
 
 ## Table of contents
 
