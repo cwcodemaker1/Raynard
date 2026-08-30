@@ -1,27 +1,49 @@
 local Players = game:GetService("Players")
-local HttpService = game:GetService("HttpService")
+
 local OwnerGateOverride = false
 
 local function OwnerGate()
-    OwnerGateOverride = not OwnerGateOverride
-    
-    for i = 1, 16 do
-        local constructions = workspace["Tycoon"..i]:FindFirstChild("Constructions")
-        if constructions then
-            local gates = {"GFOwnerGate", "GFOwnerGate2", "TFOwnerGate"}
-            
-            for _, gateName in ipairs(gates) do
-                local d = constructions:FindFirstChild(gateName)
-                if d and d:FindFirstChild("OwnerOnlyDoor") then
-                    d.OwnerOnlyDoorDoor.CanTouch = not OwnerGateOverride
-                end
-            end
-        end
-    end
+	OwnerGateOverride = not OwnerGateOverride
+
+	local gates = {
+		"GFOwnerGate",
+		"GFOwnerGate2",
+		"TFOwnerGate"
+	}
+
+	for i = 1, 16 do
+		local tycoon = workspace:FindFirstChild("Tycoon" .. i)
+
+		if tycoon then
+			local constructions = tycoon:FindFirstChild("Constructions")
+
+			if constructions then
+				for _, gateName in ipairs(gates) do
+					local gate = constructions:FindFirstChild(gateName)
+
+					if gate then
+						local door = gate:FindFirstChild("OwnerOnlyDoor")
+
+						if door and door:IsA("BasePart") then
+							door.CanTouch = not OwnerGateOverride
+						end
+					end
+				end
+			end
+		end
+	end
+
+	return OwnerGateOverride
 end
 
 local function CheckStaff(username)
-	local p = Players:FindFirstChild(username)
-	local rank = p and p:GetRankInGroup(12266404) or 0
+	local player = Players:FindFirstChild(username)
+
+	if not player then
+		return false
+	end
+
+	local rank = player:GetRankInGroup(12266404)
+
 	return rank > 0 and rank <= 253
 end
