@@ -1,3 +1,7 @@
+-- UIBuilderV6.lua
+-- Reusable Roblox/Luau client UI framework.
+-- Put this ModuleScript in ReplicatedStorage and require it from a LocalScript.
+
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
@@ -74,6 +78,13 @@ local DEFAULT = {
         Maximizable = true,
         Closable = true,
         StartVisible = true,
+
+        -- V6 window-management options.
+        MinimizeDock = "TopRight",
+        MinimizedWidth = 320,
+        MinimizeMargin = Vector2.new(14, 14),
+        ShowMinimizeDockButton = true,
+        ClampToViewport = true,
     },
 
     Colors = {
@@ -186,6 +197,12 @@ local DEFAULT = {
         Notifications = true,
         AutoSelectFirstTab = true,
         IgnoreToggleWhileTyping = true,
+
+        -- V6 visibility/window behavior.
+        RestoreOnShow = true,
+        ReleaseFocusOnHide = true,
+        RespectGameProcessedToggle = false,
+        TopbarDoubleClickMaximize = true,
     },
 }
 
@@ -244,6 +261,52 @@ end
 
 local function clamp(value, minimum, maximum)
     return math.max(minimum, math.min(maximum, value))
+end
+
+local MINIMIZE_DOCKS = {
+    "KeepPosition",
+    "TopLeft",
+    "TopCenter",
+    "TopRight",
+    "MiddleLeft",
+    "Center",
+    "MiddleRight",
+    "BottomLeft",
+    "BottomCenter",
+    "BottomRight",
+}
+
+local MINIMIZE_DOCK_LOOKUP = {}
+for _, dockName in ipairs(MINIMIZE_DOCKS) do
+    MINIMIZE_DOCK_LOOKUP[string.lower(dockName)] = dockName
+end
+MINIMIZE_DOCK_LOOKUP.keep = "KeepPosition"
+MINIMIZE_DOCK_LOOKUP.current = "KeepPosition"
+MINIMIZE_DOCK_LOOKUP.left = "MiddleLeft"
+MINIMIZE_DOCK_LOOKUP.right = "MiddleRight"
+MINIMIZE_DOCK_LOOKUP.top = "TopCenter"
+MINIMIZE_DOCK_LOOKUP.bottom = "BottomCenter"
+MINIMIZE_DOCK_LOOKUP.topleft = "TopLeft"
+MINIMIZE_DOCK_LOOKUP.topright = "TopRight"
+MINIMIZE_DOCK_LOOKUP.bottomleft = "BottomLeft"
+MINIMIZE_DOCK_LOOKUP.bottomright = "BottomRight"
+
+local function normalizeMinimizeDock(value)
+    local key = string.lower(tostring(value or "")):gsub("[%s_%-]", "")
+    for raw, canonical in pairs(MINIMIZE_DOCK_LOOKUP) do
+        if raw:gsub("[%s_%-]", "") == key then
+            return canonical
+        end
+    end
+    return "TopRight"
+end
+
+local function vectorMargin(value, fallback)
+    if typeof(value) == "Vector2" then
+        return value
+    end
+    local amount = tonumber(value) or fallback or 14
+    return Vector2.new(amount, amount)
 end
 
 local function stepValue(value, minimum, maximum, step)
@@ -392,9 +455,20 @@ function Library.new(configuration)
     self._destroyed = false
     self._minimized = false
     self._maximized = false
+    self._visible = self.Config.Window.StartVisible == true
+    self._windowLocked = false
+    self._alwaysOnTop = false
+    self._baseDisplayOrder = self.Config.DisplayOrder
+    self._minimizeDock = normalizeMinimizeDock(self.Config.Window.MinimizeDock)
+    self.Config.Window.MinimizeDock = self._minimizeDock
     self._expandedSize = sizeUDim(self.Config.Window.Size)
     self._lastPosition = nil
     self._lastSize = nil
+    self._lastAnchorPoint = nil
+    self._minimizeRestorePosition = nil
+    self._minimizeRestoreSize = nil
+    self._minimizeRestoreAnchorPoint = nil
+    self._minimizeRestoreMaximized = false
 
     local parent = self.Config.Parent or localPlayer:WaitForChild("PlayerGui")
     local gui = create("ScreenGui", {
@@ -437,7 +511,7 @@ function Library.new(configuration)
     self.TitleLabel = create("TextLabel", {
         Parent = topbar,
         Position = UDim2.fromOffset(14, 6),
-        Size = UDim2.new(1, -150, 0, 21),
+        Size = UDim2.new(1, -188, 0, 21),
         BackgroundTransparency = 1,
         Text = self.Title,
         TextColor3 = self.Config.Colors.Text,
@@ -450,7 +524,7 @@ function Library.new(configuration)
     self.SubtitleLabel = create("TextLabel", {
         Parent = topbar,
         Position = UDim2.fromOffset(14, 27),
-        Size = UDim2.new(1, -150, 0, 16),
+        Size = UDim2.new(1, -188, 0, 16),
         BackgroundTransparency = 1,
         Text = self.Subtitle,
         TextColor3 = self.Config.Colors.Text2,
@@ -464,7 +538,7 @@ function Library.new(configuration)
         Parent = topbar,
         AnchorPoint = Vector2.new(1, 0.5),
         Position = UDim2.new(1, -8, 0.5, 0),
-        Size = UDim2.fromOffset(116, 32),
+        Size = UDim2.fromOffset(154, 32),
         BackgroundTransparency = 1,
     })
     create("UIListLayout", {Parent = buttons, FillDirection = Enum.FillDirection.Horizontal, HorizontalAlignment = Enum.HorizontalAlignment.Right, Padding = UDim.new(0, 6)})
@@ -487,9 +561,61 @@ function Library.new(configuration)
         return b
     end
 
+    self.MinimizeDockButton = windowButton("MinimizeDock", "v", self.Config.Window.Minimizable and self.Config.Window.ShowMinimizeDockButton ~= false)
+    self.MinimizeDockButton.LayoutOrder = 1
     self.MinimizeButton = windowButton("Minimize", "-", self.Config.Window.Minimizable)
+    self.MinimizeButton.LayoutOrder = 2
     self.MaximizeButton = windowButton("Maximize", "[]", self.Config.Window.Maximizable)
+    self.MaximizeButton.LayoutOrder = 3
     self.CloseButton = windowButton("Close", "X", self.Config.Window.Closable)
+    self.CloseButton.LayoutOrder = 4
+
+    local dockMenu = create("Frame", {
+        Name = "MinimizeDockMenu",
+        Parent = gui,
+        Visible = false,
+        Size = UDim2.fromOffset(204, 188),
+        BackgroundColor3 = self.Config.Colors.Background2,
+        BorderSizePixel = 0,
+        ZIndex = 500,
+    })
+    corner(dockMenu, self.Config.Radius.Section)
+    if self.Config.Stroke.Enabled then
+        stroke(dockMenu, self.Config.Colors.Border, self.Config.Stroke.Thickness, self.Config.Stroke.Transparency)
+    end
+    create("UIPadding", {Parent = dockMenu, PaddingTop = UDim.new(0, 8), PaddingBottom = UDim.new(0, 8), PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8)})
+    create("UIGridLayout", {
+        Parent = dockMenu,
+        CellSize = UDim2.fromOffset(90, 28),
+        CellPadding = UDim2.fromOffset(6, 6),
+        FillDirectionMaxCells = 2,
+        SortOrder = Enum.SortOrder.LayoutOrder,
+    })
+    self.MinimizeDockMenu = dockMenu
+    self._dockMenuButtons = {}
+
+    for index, dockName in ipairs(MINIMIZE_DOCKS) do
+        local dockButton = create("TextButton", {
+            Name = dockName,
+            Parent = dockMenu,
+            Size = UDim2.fromOffset(90, 28),
+            BackgroundColor3 = self.Config.Colors.Control,
+            BorderSizePixel = 0,
+            Text = dockName,
+            TextColor3 = self.Config.Colors.Text2,
+            TextSize = self.Config.TextSizes.Tiny + 1,
+            Font = self.Config.Fonts.Medium,
+            AutoButtonColor = false,
+            LayoutOrder = index,
+            ZIndex = 501,
+        })
+        corner(dockButton, self.Config.Radius.Button)
+        self._dockMenuButtons[dockName] = dockButton
+        self:_Track(dockButton.Activated:Connect(function()
+            self:SetMinimizeDock(dockName, true)
+            dockMenu.Visible = false
+        end))
+    end
 
     local body = create("Frame", {
         Name = "Body",
@@ -596,9 +722,24 @@ function Library.new(configuration)
     local dragging = false
     local dragStart = Vector2.zero
     local startPosition = main.Position
+    local lastTopbarClick = 0
     self:_Track(topbar.InputBegan:Connect(function(input)
-        if not self.Config.Window.Draggable or self._maximized then return end
+        if self._windowLocked or not self.Config.Window.Draggable or self._maximized then return end
         if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            if input.UserInputType == Enum.UserInputType.MouseButton1 and self.Config.Behavior.TopbarDoubleClickMaximize then
+                local now = os.clock()
+                if now - lastTopbarClick <= 0.30 then
+                    lastTopbarClick = 0
+                    dragging = false
+                    if self._minimized then
+                        self:SetMinimized(false)
+                    elseif self.Config.Window.Maximizable then
+                        self:SetMaximized(not self._maximized)
+                    end
+                    return
+                end
+                lastTopbarClick = now
+            end
             dragging = true
             dragStart = input.Position
             startPosition = main.Position
@@ -612,14 +753,19 @@ function Library.new(configuration)
         end
     end))
     self:_Track(UserInputService.InputEnded:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then dragging = false end
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            if dragging then
+                dragging = false
+                if self.Config.Window.ClampToViewport then self:ClampToViewport() end
+            end
+        end
     end))
 
     local resizing = false
     local resizeStart = Vector2.zero
     local resizeSize = Vector2.zero
     self:_Track(resizeGrip.InputBegan:Connect(function(input)
-        if not self.Config.Window.Resizable or self._maximized then return end
+        if self._windowLocked or not self.Config.Window.Resizable or self._maximized or self._minimized then return end
         if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
             resizing = true
             resizeStart = input.Position
@@ -643,17 +789,91 @@ function Library.new(configuration)
         if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then resizing = false end
     end))
 
-    self:_Track(self.MinimizeButton.Activated:Connect(function() self:SetMinimized(not self._minimized) end))
-    self:_Track(self.MaximizeButton.Activated:Connect(function() self:SetMaximized(not self._maximized) end))
+    local function refreshDockMenu()
+        local current = self:GetMinimizeDock()
+        for dockName, button in pairs(self._dockMenuButtons) do
+            local selected = dockName == current
+            button.BackgroundColor3 = selected and self.Config.Colors.Accent2 or self.Config.Colors.Control
+            button.TextColor3 = selected and self.Config.Colors.Text or self.Config.Colors.Text2
+        end
+    end
+
+    local function positionDockMenu()
+        local camera = workspace.CurrentCamera
+        local viewport = camera and camera.ViewportSize or Vector2.new(1920, 1080)
+        local menuSize = dockMenu.AbsoluteSize
+        if menuSize.X <= 0 then menuSize = Vector2.new(204, 188) end
+        local mainPosition = main.AbsolutePosition
+        local mainSize = main.AbsoluteSize
+        local x = mainPosition.X + mainSize.X - menuSize.X
+        local y = mainPosition.Y + self.Config.Layout.TopbarHeight + 6
+        x = clamp(x, 8, math.max(8, viewport.X - menuSize.X - 8))
+        y = clamp(y, 8, math.max(8, viewport.Y - menuSize.Y - 8))
+        dockMenu.Position = UDim2.fromOffset(x, y)
+    end
+
+    self:_Track(self.MinimizeDockButton.Activated:Connect(function()
+        if not self.Config.Window.Minimizable then return end
+        if dockMenu.Visible then
+            dockMenu.Visible = false
+        else
+            refreshDockMenu()
+            positionDockMenu()
+            dockMenu.Visible = true
+        end
+    end))
+    self:_Track(self.MinimizeButton.Activated:Connect(function()
+        dockMenu.Visible = false
+        self:SetMinimized(not self._minimized)
+    end))
+    self:_Track(self.MaximizeButton.Activated:Connect(function()
+        dockMenu.Visible = false
+        self:SetMaximized(not self._maximized)
+    end))
     self:_Track(self.CloseButton.Activated:Connect(function()
         if self.Config.Behavior.CloseDestroys then self:Destroy() else self:SetVisible(false) self:_Emit("WindowClosed", "Window", false) end
     end))
 
     self:_Track(UserInputService.InputBegan:Connect(function(input, processed)
+        -- Handle the Rayward toggle before rejecting game-processed input. This makes
+        -- reopening reliable even when Roblox/CoreGui consumes the key.
+        if matches(input, self.ToggleKey) then
+            local focused = UserInputService:GetFocusedTextBox()
+            if self:IsVisible() and self.Config.Behavior.IgnoreToggleWhileTyping and focused then
+                return
+            end
+            if processed and self.Config.Behavior.RespectGameProcessedToggle then
+                return
+            end
+            self:Toggle()
+            return
+        end
         if processed then return end
-        if self.Config.Behavior.IgnoreToggleWhileTyping and UserInputService:GetFocusedTextBox() then return end
-        if matches(input, self.ToggleKey) then self:Toggle() end
     end))
+
+    local viewportConnection
+    local function bindViewport()
+        if viewportConnection then
+            pcall(function() viewportConnection:Disconnect() end)
+            viewportConnection = nil
+        end
+        local camera = workspace.CurrentCamera
+        if camera then
+            viewportConnection = camera:GetPropertyChangedSignal("ViewportSize"):Connect(function()
+                task.defer(function()
+                    if self._destroyed then return end
+                    if self._minimized then
+                        self:_ApplyMinimizeDock()
+                    elseif self.Config.Window.ClampToViewport and not self._maximized then
+                        self:ClampToViewport()
+                    end
+                end)
+            end)
+            self:_Track(viewportConnection)
+        end
+    end
+    self:_Track(workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(bindViewport))
+    bindViewport()
 
     return self
 end
@@ -737,13 +957,57 @@ function Library:SetValue(id, value, silent)
 end
 
 function Library:SetVisible(visible)
-    self.Gui.Enabled = visible == true
-    self:_Emit("VisibilityChanged", "Window", self.Gui.Enabled)
+    if self._destroyed or not self.Gui then return self end
+    visible = visible == true
+
+    if not visible and self.Config.Behavior.ReleaseFocusOnHide then
+        local focused = UserInputService:GetFocusedTextBox()
+        if focused then
+            pcall(function() focused:ReleaseFocus(false) end)
+        end
+    end
+
+    if self.Tooltip then self.Tooltip.Visible = false end
+    if self.MinimizeDockMenu then self.MinimizeDockMenu.Visible = false end
+    self.Gui.Enabled = visible
+    self._visible = visible
+
+    if visible then
+        self.Main.Visible = true
+        if self.Config.Behavior.RestoreOnShow and self._minimized then
+            self:SetMinimized(false)
+        elseif self._minimized then
+            self:_ApplyMinimizeDock()
+        elseif self.Config.Window.ClampToViewport and not self._maximized then
+            task.defer(function()
+                if not self._destroyed then self:ClampToViewport() end
+            end)
+        end
+    end
+
+    self:_Emit("VisibilityChanged", "Window", visible)
     return self
 end
 
-function Library:IsVisible() return self.Gui.Enabled end
-function Library:Toggle() return self:SetVisible(not self.Gui.Enabled) end
+function Library:IsVisible()
+    return not self._destroyed and self.Gui ~= nil and self.Gui.Enabled == true and self.Main.Visible ~= false
+end
+
+function Library:Show() return self:SetVisible(true) end
+function Library:Hide() return self:SetVisible(false) end
+function Library:Toggle() return self:SetVisible(not self:IsVisible()) end
+function Library:ToggleVisibility() return self:Toggle() end
+
+function Library:SetToggleKey(key)
+    if typeof(key) == "EnumItem" and key.EnumType == Enum.KeyCode then
+        self.ToggleKey = key
+        self.Config.ToggleKey = key
+        self:_Emit("ToggleKeyChanged", "Window", key)
+    end
+    return self
+end
+
+function Library:GetToggleKey() return self.ToggleKey end
 
 function Library:SetTitle(text)
     self.Title = tostring(text)
@@ -763,8 +1027,18 @@ function Library:SetStatus(text, color)
     return self
 end
 
-function Library:SetPosition(position) self.Main.Position = position return self end
-function Library:SetSize(size) self.Main.Size = sizeUDim(size) self._expandedSize = self.Main.Size return self end
+function Library:SetPosition(position)
+    self.Main.Position = position
+    if self.Config.Window.ClampToViewport and not self._maximized then self:ClampToViewport() end
+    return self
+end
+
+function Library:SetSize(size)
+    self.Main.Size = sizeUDim(size)
+    if not self._minimized then self._expandedSize = self.Main.Size end
+    if self.Config.Window.ClampToViewport and not self._maximized then self:ClampToViewport() end
+    return self
+end
 
 function Library:Center()
     self.Main.AnchorPoint = Vector2.new(0.5, 0.5)
@@ -772,29 +1046,213 @@ function Library:Center()
     return self
 end
 
-function Library:SetMinimized(minimized)
-    if not self.Config.Window.Minimizable then return self end
-    self._minimized = minimized == true
-    self.Body.Visible = not self._minimized
-    self.Statusbar.Visible = not self._minimized
-    self.ResizeGrip.Visible = self.Config.Window.Resizable and not self._minimized and not self._maximized
-    if self._minimized then
-        self._expandedSize = self.Main.Size
-        self.Main.Size = UDim2.new(self.Main.Size.X.Scale, self.Main.Size.X.Offset, 0, self.Config.Layout.TopbarHeight)
-    else
-        self.Main.Size = self._expandedSize
+function Library:GetMinimizeDocks()
+    return deepCopy(MINIMIZE_DOCKS)
+end
+
+function Library:GetMinimizeDock()
+    return self._minimizeDock or normalizeMinimizeDock(self.Config.Window.MinimizeDock)
+end
+
+function Library:_ApplyMinimizeDock()
+    if not self._minimized or not self.Main then return self end
+    local dock = self:GetMinimizeDock()
+    if dock == "KeepPosition" then
+        if self.Config.Window.ClampToViewport then self:ClampToViewport() end
+        return self
     end
-    self:_Emit("WindowMinimized", "Window", self._minimized)
+
+    local margin = vectorMargin(self.Config.Window.MinimizeMargin, 14)
+    local anchor = Vector2.new(0.5, 0.5)
+    local position = UDim2.fromScale(0.5, 0.5)
+
+    if dock == "TopLeft" then
+        anchor = Vector2.new(0, 0)
+        position = UDim2.new(0, margin.X, 0, margin.Y)
+    elseif dock == "TopCenter" then
+        anchor = Vector2.new(0.5, 0)
+        position = UDim2.new(0.5, 0, 0, margin.Y)
+    elseif dock == "TopRight" then
+        anchor = Vector2.new(1, 0)
+        position = UDim2.new(1, -margin.X, 0, margin.Y)
+    elseif dock == "MiddleLeft" then
+        anchor = Vector2.new(0, 0.5)
+        position = UDim2.new(0, margin.X, 0.5, 0)
+    elseif dock == "Center" then
+        anchor = Vector2.new(0.5, 0.5)
+        position = UDim2.fromScale(0.5, 0.5)
+    elseif dock == "MiddleRight" then
+        anchor = Vector2.new(1, 0.5)
+        position = UDim2.new(1, -margin.X, 0.5, 0)
+    elseif dock == "BottomLeft" then
+        anchor = Vector2.new(0, 1)
+        position = UDim2.new(0, margin.X, 1, -margin.Y)
+    elseif dock == "BottomCenter" then
+        anchor = Vector2.new(0.5, 1)
+        position = UDim2.new(0.5, 0, 1, -margin.Y)
+    elseif dock == "BottomRight" then
+        anchor = Vector2.new(1, 1)
+        position = UDim2.new(1, -margin.X, 1, -margin.Y)
+    end
+
+    self.Main.AnchorPoint = anchor
+    self.Main.Position = position
     return self
 end
+
+function Library:SetMinimizeDock(dock, applyNow)
+    local normalized = normalizeMinimizeDock(dock)
+    self._minimizeDock = normalized
+    self.Config.Window.MinimizeDock = normalized
+    if self._minimized and applyNow ~= false then self:_ApplyMinimizeDock() end
+    if self._dockMenuButtons then
+        for dockName, button in pairs(self._dockMenuButtons) do
+            local selected = dockName == normalized
+            button.BackgroundColor3 = selected and self.Config.Colors.Accent2 or self.Config.Colors.Control
+            button.TextColor3 = selected and self.Config.Colors.Text or self.Config.Colors.Text2
+        end
+    end
+    self:_Emit("MinimizeDockChanged", "Window", normalized)
+    return self
+end
+
+function Library:CycleMinimizeDock(direction)
+    local current = self:GetMinimizeDock()
+    local index = table.find(MINIMIZE_DOCKS, current) or 1
+    local step = tonumber(direction) and (tonumber(direction) < 0 and -1 or 1) or 1
+    index = ((index - 1 + step) % #MINIMIZE_DOCKS) + 1
+    return self:SetMinimizeDock(MINIMIZE_DOCKS[index], true)
+end
+
+function Library:ClampToViewport(marginOverride)
+    if self._destroyed or not self.Main or self._maximized then return self end
+    local camera = workspace.CurrentCamera
+    if not camera then return self end
+    local viewport = camera.ViewportSize
+    if viewport.X <= 0 or viewport.Y <= 0 then return self end
+
+    local margin = vectorMargin(marginOverride or self.Config.Window.MinimizeMargin, 8)
+    local size = self.Main.Size
+    local width = viewport.X * size.X.Scale + size.X.Offset
+    local height = viewport.Y * size.Y.Scale + size.Y.Offset
+    local pos = self.Main.Position
+    local anchor = self.Main.AnchorPoint
+    local left = viewport.X * pos.X.Scale + pos.X.Offset - width * anchor.X
+    local top = viewport.Y * pos.Y.Scale + pos.Y.Offset - height * anchor.Y
+
+    local minX = math.min(margin.X, math.max(0, viewport.X - width))
+    local maxX = math.max(minX, viewport.X - width - margin.X)
+    local minY = math.min(margin.Y, math.max(0, viewport.Y - height))
+    local maxY = math.max(minY, viewport.Y - height - margin.Y)
+    local clampedLeft = clamp(left, minX, maxX)
+    local clampedTop = clamp(top, minY, maxY)
+    local dx = clampedLeft - left
+    local dy = clampedTop - top
+
+    if math.abs(dx) > 0.01 or math.abs(dy) > 0.01 then
+        self.Main.Position = UDim2.new(pos.X.Scale, pos.X.Offset + dx, pos.Y.Scale, pos.Y.Offset + dy)
+        self:_Emit("WindowClamped", "Window", self.Main.Position)
+    end
+    return self
+end
+
+function Library:SetWindowLocked(locked)
+    self._windowLocked = locked == true
+    self.ResizeGrip.Visible = self.Config.Window.Resizable and not self._windowLocked and not self._minimized and not self._maximized
+    self:_Emit("WindowLockedChanged", "Window", self._windowLocked)
+    return self
+end
+
+function Library:IsWindowLocked() return self._windowLocked == true end
+
+function Library:SetAlwaysOnTop(enabled)
+    self._alwaysOnTop = enabled == true
+    self.Gui.DisplayOrder = self._alwaysOnTop and math.max(self._baseDisplayOrder + 1000, 1000) or self._baseDisplayOrder
+    self:_Emit("AlwaysOnTopChanged", "Window", self._alwaysOnTop)
+    return self
+end
+
+function Library:IsAlwaysOnTop() return self._alwaysOnTop == true end
+
+function Library:BringToFront()
+    self.Gui.DisplayOrder = math.max(self.Gui.DisplayOrder, self._baseDisplayOrder) + 1
+    self:_Emit("BroughtToFront", "Window", self.Gui.DisplayOrder)
+    return self
+end
+
+function Library:SetMinimized(minimized)
+    if not self.Config.Window.Minimizable then return self end
+    minimized = minimized == true
+
+    if minimized == self._minimized then
+        if minimized then self:_ApplyMinimizeDock() end
+        return self
+    end
+
+    if minimized then
+        self._minimizeRestoreMaximized = self._maximized == true
+        if self._maximized then self:SetMaximized(false) end
+
+        self._minimizeRestorePosition = self.Main.Position
+        self._minimizeRestoreSize = self.Main.Size
+        self._minimizeRestoreAnchorPoint = self.Main.AnchorPoint
+        self._expandedSize = self.Main.Size
+        self._minimized = true
+
+        self.Body.Visible = false
+        self.Statusbar.Visible = false
+        self.ResizeGrip.Visible = false
+        self.MaximizeButton.Visible = false
+        self.MinimizeButton.Text = "+"
+
+        local currentWidth = self.Main.AbsoluteSize.X
+        if currentWidth <= 0 then
+            currentWidth = self.Config.Window.Size.X
+        end
+        local minimizedWidth = clamp(tonumber(self.Config.Window.MinimizedWidth) or 320, 220, math.max(220, currentWidth))
+        self.Main.Size = UDim2.fromOffset(minimizedWidth, self.Config.Layout.TopbarHeight)
+        self:_ApplyMinimizeDock()
+    else
+        self._minimized = false
+        self.Main.AnchorPoint = self._minimizeRestoreAnchorPoint or Vector2.new(0.5, 0.5)
+        self.Main.Position = self._minimizeRestorePosition or self.Config.Window.Position
+        self.Main.Size = self._minimizeRestoreSize or self._expandedSize
+
+        self.Body.Visible = true
+        self.Statusbar.Visible = true
+        self.MinimizeButton.Text = "-"
+        self.MaximizeButton.Visible = self.Config.Window.Maximizable
+        self.ResizeGrip.Visible = self.Config.Window.Resizable and not self._windowLocked
+
+        local restoreMaximized = self._minimizeRestoreMaximized
+        self._minimizeRestoreMaximized = false
+        if restoreMaximized and self.Config.Window.Maximizable then
+            self:SetMaximized(true)
+        elseif self.Config.Window.ClampToViewport then
+            self:ClampToViewport()
+        end
+    end
+
+    self:_Emit("WindowMinimized", "Window", self._minimized, {Dock = self:GetMinimizeDock()})
+    return self
+end
+
+function Library:IsMinimized() return self._minimized == true end
 
 function Library:SetMaximized(maximized)
     if not self.Config.Window.Maximizable then return self end
     maximized = maximized == true
+
+    if maximized and self._minimized then
+        self._minimizeRestoreMaximized = false
+        self:SetMinimized(false)
+    end
+
     if maximized == self._maximized then return self end
     if maximized then
         self._lastPosition = self.Main.Position
         self._lastSize = self.Main.Size
+        self._lastAnchorPoint = self.Main.AnchorPoint
         self.Main.AnchorPoint = Vector2.new(0, 0)
         self.Main.Position = UDim2.fromOffset(8, 8)
         self.Main.Size = UDim2.new(1, -16, 1, -16)
@@ -802,14 +1260,69 @@ function Library:SetMaximized(maximized)
         self.MaximizeButton.Text = "R"
         self.ResizeGrip.Visible = false
     else
-        self.Main.AnchorPoint = Vector2.new(0.5, 0.5)
+        self.Main.AnchorPoint = self._lastAnchorPoint or Vector2.new(0.5, 0.5)
         self.Main.Position = self._lastPosition or self.Config.Window.Position
         self.Main.Size = self._lastSize or sizeUDim(self.Config.Window.Size)
         self._maximized = false
         self.MaximizeButton.Text = "[]"
-        self.ResizeGrip.Visible = self.Config.Window.Resizable and not self._minimized
+        self.ResizeGrip.Visible = self.Config.Window.Resizable and not self._windowLocked and not self._minimized
+        if self.Config.Window.ClampToViewport then self:ClampToViewport() end
     end
     self:_Emit("WindowMaximized", "Window", self._maximized)
+    return self
+end
+
+function Library:IsMaximized() return self._maximized == true end
+
+function Library:Restore()
+    self:SetVisible(true)
+    if self._minimized then self:SetMinimized(false) end
+    return self
+end
+
+function Library:ResetWindow()
+    if self._minimized then self:SetMinimized(false) end
+    if self._maximized then self:SetMaximized(false) end
+    self.Main.AnchorPoint = Vector2.new(0.5, 0.5)
+    self.Main.Position = self.Config.Window.Position
+    self.Main.Size = sizeUDim(self.Config.Window.Size)
+    self._expandedSize = self.Main.Size
+    self:SetWindowLocked(false)
+    self:SetVisible(true)
+    if self.Config.Window.ClampToViewport then self:ClampToViewport() end
+    self:_Emit("WindowReset", "Window", self:GetWindowState())
+    return self
+end
+
+function Library:GetWindowState()
+    return {
+        Visible = self:IsVisible(),
+        Minimized = self._minimized == true,
+        Maximized = self._maximized == true,
+        Locked = self._windowLocked == true,
+        AlwaysOnTop = self._alwaysOnTop == true,
+        MinimizeDock = self:GetMinimizeDock(),
+        Position = self.Main.Position,
+        Size = self.Main.Size,
+        AnchorPoint = self.Main.AnchorPoint,
+        ToggleKey = self.ToggleKey,
+    }
+end
+
+function Library:ApplyWindowState(state)
+    if type(state) ~= "table" then return self end
+    if state.MinimizeDock ~= nil then self:SetMinimizeDock(state.MinimizeDock, false) end
+    if state.Position ~= nil then self.Main.Position = state.Position end
+    if state.Size ~= nil then self.Main.Size = sizeUDim(state.Size) self._expandedSize = self.Main.Size end
+    if state.AnchorPoint ~= nil and typeof(state.AnchorPoint) == "Vector2" then self.Main.AnchorPoint = state.AnchorPoint end
+    if state.ToggleKey ~= nil then self:SetToggleKey(state.ToggleKey) end
+    if state.Locked ~= nil then self:SetWindowLocked(state.Locked) end
+    if state.AlwaysOnTop ~= nil then self:SetAlwaysOnTop(state.AlwaysOnTop) end
+    if state.Maximized ~= nil then self:SetMaximized(state.Maximized) end
+    if state.Minimized ~= nil then self:SetMinimized(state.Minimized) end
+    if state.Visible ~= nil then self:SetVisible(state.Visible) end
+    if self.Config.Window.ClampToViewport and not self._maximized then self:ClampToViewport() end
+    self:_Emit("WindowStateApplied", "Window", self:GetWindowState())
     return self
 end
 
@@ -5110,11 +5623,11 @@ function Library:ApplyTheme(nameOrTheme)
     self.Config=deepMerge(self.Config,t) local c=self.Config.Colors self.Main.BackgroundColor3=c.Background self.Topbar.BackgroundColor3=c.Background2 self.Sidebar.BackgroundColor3=c.Sidebar self.Statusbar.BackgroundColor3=c.Background2 self.TitleLabel.TextColor3=c.Text self.SubtitleLabel.TextColor3=c.Text2 self.StatusLabel.TextColor3=c.Text2 self:_Emit("ThemeApplied","Theme",nameOrTheme) return true
 end
 function Library:SetAccent(color) if typeof(color)=="Color3" then self.Config.Colors.Accent=color self:_Emit("AccentChanged","Theme",color) end return self end
-function Library:SetUIScale(scale) scale=clamp(tonumber(scale) or 1,.5,2.5) local s=self.Main:FindFirstChild("UIBuilderV5Scale") if not s then s=Instance.new("UIScale") s.Name="UIBuilderV5Scale" s.Parent=self.Main end s.Scale=scale self._uiScale=scale return self end
+function Library:SetUIScale(scale) scale=clamp(tonumber(scale) or 1,.5,2.5) local s=self.Main:FindFirstChild("UIBuilderV6Scale") if not s then s=Instance.new("UIScale") s.Name="UIBuilderV6Scale" s.Parent=self.Main end s.Scale=scale self._uiScale=scale return self end
 function Library:GetUIScale() return self._uiScale or 1 end
 function Library:SetReducedMotion(v) self._reducedMotion=v==true self.Config.Animation.Enabled=not self._reducedMotion return self end
 function Library:GetReducedMotion() return self._reducedMotion==true end
-function Library:SetTextScale(scale) scale=clamp(tonumber(scale) or 1,.6,2) for _,o in ipairs(self.Gui:GetDescendants()) do if o:IsA("TextLabel") or o:IsA("TextButton") or o:IsA("TextBox") then local b=o:GetAttribute("UIB5BaseText") or o.TextSize o:SetAttribute("UIB5BaseText",b) o.TextSize=math.max(8,math.floor(b*scale+.5)) end end self._textScale=scale return self end
+function Library:SetTextScale(scale) scale=clamp(tonumber(scale) or 1,.6,2) for _,o in ipairs(self.Gui:GetDescendants()) do if o:IsA("TextLabel") or o:IsA("TextButton") or o:IsA("TextBox") then local b=o:GetAttribute("UIB6BaseText") or o.TextSize o:SetAttribute("UIB6BaseText",b) o.TextSize=math.max(8,math.floor(b*scale+.5)) end end self._textScale=scale return self end
 function Library:GetTextScale() return self._textScale or 1 end
 
 function Library:Snapshot(name) self._history=self._history or {} self._redo={} table.insert(self._history,{Name=name or "Snapshot",State=self:ExportState()}) while #self._history>(self.Config.HistoryLimit or 50) do table.remove(self._history,1) end return self end
@@ -5565,6 +6078,76 @@ Section.AddPreset=Section.AddPresetSelector
 Section.AddTheme=Section.AddThemeSelector
 Section.AddCommands=Section.AddCommandPalette
 
+
+----------------------------------------------------------------
+-- V6: WINDOW MANAGEMENT CONTROLS
+----------------------------------------------------------------
+
+function Section:AddMinimizeDockSelector(configuration)
+    configuration = configuration or {}
+    local app = self.App
+    local userCallback = configuration.Callback
+    local options = configuration.Options or app:GetMinimizeDocks()
+    local defaultDock = configuration.Default or app:GetMinimizeDock()
+    local cfg = deepMerge(configuration, {
+        Text = configuration.Text or "Minimized Window Location",
+        Options = options,
+        Default = defaultDock,
+    })
+    cfg.Callback = function(value, control)
+        app:SetMinimizeDock(value, true)
+        if type(userCallback) == "function" then app:_Callback(userCallback, value, control) end
+    end
+    return self:AddDropdown(cfg)
+end
+
+function Section:AddWindowLockToggle(configuration)
+    configuration = configuration or {}
+    local app = self.App
+    local userCallback = configuration.Callback
+    local cfg = deepMerge(configuration, {
+        Text = configuration.Text or "Lock Window Position",
+        Default = configuration.Default ~= nil and configuration.Default or app:IsWindowLocked(),
+    })
+    cfg.Callback = function(value, control)
+        app:SetWindowLocked(value)
+        if type(userCallback) == "function" then app:_Callback(userCallback, value, control) end
+    end
+    return self:AddToggle(cfg)
+end
+
+function Section:AddAlwaysOnTopToggle(configuration)
+    configuration = configuration or {}
+    local app = self.App
+    local userCallback = configuration.Callback
+    local cfg = deepMerge(configuration, {
+        Text = configuration.Text or "Always On Top",
+        Default = configuration.Default ~= nil and configuration.Default or app:IsAlwaysOnTop(),
+    })
+    cfg.Callback = function(value, control)
+        app:SetAlwaysOnTop(value)
+        if type(userCallback) == "function" then app:_Callback(userCallback, value, control) end
+    end
+    return self:AddToggle(cfg)
+end
+
+function Section:AddRestoreOnShowToggle(configuration)
+    configuration = configuration or {}
+    local app = self.App
+    local userCallback = configuration.Callback
+    local cfg = deepMerge(configuration, {
+        Text = configuration.Text or "Restore When Shown",
+        Default = configuration.Default ~= nil and configuration.Default or app.Config.Behavior.RestoreOnShow,
+    })
+    cfg.Callback = function(value, control)
+        app.Config.Behavior.RestoreOnShow = value == true
+        if type(userCallback) == "function" then app:_Callback(userCallback, value, control) end
+    end
+    return self:AddToggle(cfg)
+end
+
+Section.AddMinimizeLocation = Section.AddMinimizeDockSelector
+Section.AddDockSelector = Section.AddMinimizeDockSelector
 
 ----------------------------------------------------------------
 -- V6: RUNTIME API / FEATURE INTROSPECTION
