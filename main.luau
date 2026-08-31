@@ -5045,41 +5045,348 @@ end
 ----------------------------------------------------------------
 -- AVATAR VIEWPORT
 ----------------------------------------------------------------
-
 function Section:AddAvatarViewport(configuration)
-    configuration = configuration or {}
-    local app = self.App
-    local player = configuration.Player or Players.LocalPlayer
-    local row = self:_Row(configuration.Height or 240)
-    local viewport = create("ViewportFrame", {Parent = row, Size = UDim2.fromScale(1, 1), BackgroundColor3 = configuration.BackgroundColor or app.Config.Colors.Background2, BorderSizePixel = 0, Ambient = Color3.fromRGB(190,190,190), LightColor = Color3.new(1,1,1), LightDirection = Vector3.new(-1,-1,-1)}) corner(viewport, app.Config.Radius.Control)
-    local world = Instance.new("WorldModel") world.Parent = viewport
-    local camera = Instance.new("Camera") camera.Parent = viewport viewport.CurrentCamera = camera
-    local id = app:_MakeId("AvatarViewport", configuration.Id)
-    local control = self:_Control(id, "AvatarViewport", configuration.Text or "Avatar", row, configuration)
-    local model
-    local function set(target, silent)
-        if typeof(target) == "number" then
-            for _, p in ipairs(Players:GetPlayers()) do if p.UserId == target then target = p break end end
-        end
-        if not (typeof(target) == "Instance" and target:IsA("Player")) then return player end
-        player = target
-        if model then model:Destroy() model = nil end
-        task.spawn(function()
-            local ok, created = pcall(function() return Players:CreateHumanoidModelFromUserId(player.UserId) end)
-            if ok and created and world.Parent then
-                model = created model.Parent = world
-                local cf, size = model:GetBoundingBox()
-                camera.CFrame = CFrame.new(cf.Position + Vector3.new(0, size.Y * 0.1, math.max(4, size.Magnitude * 0.75)), cf.Position + Vector3.new(0, size.Y * 0.05, 0))
-            end
-        end)
-        if not silent then self:_Emit(control, "AvatarChanged", player, nil) app:_Callback(configuration.Callback, player, control) end
-        return player
-    end
-    control._getter = function() return player end control._setter = set
-    set(player, true)
-    return app:_Register(control)
-end
+	configuration = configuration or {}
 
+	local app = self.App
+	local player = configuration.Player or Players.LocalPlayer
+
+	local row = self:_Row(configuration.Height or 240)
+
+	local viewport = create("ViewportFrame", {
+		Parent = row,
+		Size = UDim2.fromScale(1, 1),
+
+		BackgroundColor3 =
+			configuration.BackgroundColor
+			or app.Config.Colors.Background2,
+
+		BorderSizePixel = 0,
+
+		Ambient =
+			configuration.Ambient
+			or Color3.fromRGB(190, 190, 190),
+
+		LightColor =
+			configuration.LightColor
+			or Color3.new(1, 1, 1),
+
+		LightDirection =
+			configuration.LightDirection
+			or Vector3.new(-1, -1, -1),
+	})
+
+	corner(viewport, app.Config.Radius.Control)
+
+	local world = Instance.new("WorldModel")
+	world.Parent = viewport
+
+	local camera = Instance.new("Camera")
+	camera.Parent = viewport
+	viewport.CurrentCamera = camera
+
+	local id = app:_MakeId(
+		"AvatarViewport",
+		configuration.Id
+	)
+
+	local control = self:_Control(
+		id,
+		"AvatarViewport",
+		configuration.Text or "Avatar",
+		row,
+		configuration
+	)
+
+	local model = nil
+
+	------------------------------------------------------------
+	-- ROTATION
+	------------------------------------------------------------
+
+	local autoRotate =
+		configuration.AutoRotate == true
+
+	local rotationSpeed =
+		tonumber(configuration.RotationSpeed)
+		or 35
+
+	local fixedRotation =
+		tonumber(configuration.FixedRotation)
+		or 0
+
+	local rotation = fixedRotation
+
+	local function normalizeRotation(value)
+		value = tonumber(value) or 0
+		return value % 360
+	end
+
+	local function applyRotation()
+		if not model or not model.Parent then
+			return
+		end
+
+		rotation = normalizeRotation(rotation)
+
+		local pivot = model:GetPivot()
+
+		model:PivotTo(
+			CFrame.new(pivot.Position)
+				* CFrame.Angles(
+					0,
+					math.rad(rotation),
+					0
+				)
+		)
+	end
+
+	------------------------------------------------------------
+	-- CAMERA
+	------------------------------------------------------------
+
+	local function frameAvatar()
+		if not model then
+			return
+		end
+
+		local cf, size = model:GetBoundingBox()
+
+		local target =
+			cf.Position
+			+ Vector3.new(
+				0,
+				size.Y * 0.05,
+				0
+			)
+
+		local distance =
+			configuration.Zoom
+			or math.max(
+				4,
+				size.Magnitude * 0.75
+			)
+
+		camera.FieldOfView =
+			configuration.FieldOfView
+			or 70
+
+		camera.CFrame = CFrame.new(
+			cf.Position
+				+ Vector3.new(
+					0,
+					size.Y * 0.1,
+					distance
+				),
+
+			target
+		)
+	end
+
+	------------------------------------------------------------
+	-- PLAYER
+	------------------------------------------------------------
+
+	local function set(target, silent)
+		if typeof(target) == "number" then
+			for _, p in ipairs(Players:GetPlayers()) do
+				if p.UserId == target then
+					target = p
+					break
+				end
+			end
+		end
+
+		if not (
+			typeof(target) == "Instance"
+			and target:IsA("Player")
+		) then
+			return player
+		end
+
+		player = target
+
+		if model then
+			model:Destroy()
+			model = nil
+		end
+
+		task.spawn(function()
+			local ok, created = pcall(function()
+				return Players:CreateHumanoidModelFromUserId(
+					player.UserId
+				)
+			end)
+
+			if not ok
+				or not created
+				or not world.Parent
+			then
+				return
+			end
+
+			model = created
+			model.Parent = world
+
+			----------------------------------------------------
+			-- Make viewport avatar non-physical
+			----------------------------------------------------
+
+			for _, object in ipairs(model:GetDescendants()) do
+				if object:IsA("BasePart") then
+					object.Anchored = true
+					object.CanCollide = false
+					object.CanTouch = false
+					object.CanQuery = false
+				end
+			end
+
+			rotation = fixedRotation
+
+			applyRotation()
+			frameAvatar()
+		end)
+
+		if not silent then
+			self:_Emit(
+				control,
+				"AvatarChanged",
+				player,
+				nil
+			)
+
+			app:_Callback(
+				configuration.Callback,
+				player,
+				control
+			)
+		end
+
+		return player
+	end
+
+	------------------------------------------------------------
+	-- AUTO ROTATE
+	------------------------------------------------------------
+
+	local rotationConnection =
+		RunService.RenderStepped:Connect(function(dt)
+			if not autoRotate then
+				return
+			end
+
+			if not model or not model.Parent then
+				return
+			end
+
+			rotation += dt * rotationSpeed
+
+			applyRotation()
+		end)
+
+	table.insert(
+		control._connections,
+		rotationConnection
+	)
+
+	------------------------------------------------------------
+	-- CONTROL API
+	------------------------------------------------------------
+
+	control._getter = function()
+		return player
+	end
+
+	control._setter = set
+
+	function control:SetAutoRotate(state)
+		autoRotate = state == true
+
+		self.App:_Emit(
+			"AvatarAutoRotateChanged",
+			self.Id,
+			autoRotate
+		)
+
+		return self
+	end
+
+	function control:GetAutoRotate()
+		return autoRotate
+	end
+
+	function control:SetRotationSpeed(speed)
+		rotationSpeed =
+			tonumber(speed)
+			or rotationSpeed
+
+		return self
+	end
+
+	function control:GetRotationSpeed()
+		return rotationSpeed
+	end
+
+	function control:SetFixedRotation(degrees)
+		fixedRotation =
+			normalizeRotation(degrees)
+
+		rotation = fixedRotation
+
+		applyRotation()
+
+		return self
+	end
+
+	function control:GetFixedRotation()
+		return fixedRotation
+	end
+
+	function control:SetRotation(degrees)
+		rotation =
+			normalizeRotation(degrees)
+
+		applyRotation()
+
+		return self
+	end
+
+	function control:GetRotation()
+		return rotation
+	end
+
+	function control:ResetRotation()
+		rotation = fixedRotation
+
+		applyRotation()
+
+		return self
+	end
+
+	function control:Frame()
+		frameAvatar()
+
+		return self
+	end
+
+	function control:GetModel()
+		return model
+	end
+
+	function control:GetViewport()
+		return viewport
+	end
+
+	function control:GetCamera()
+		return camera
+	end
+
+	------------------------------------------------------------
+
+	set(player, true)
+
+	return app:_Register(control)
+end
 ----------------------------------------------------------------
 -- COLOR SWATCHES
 ----------------------------------------------------------------
