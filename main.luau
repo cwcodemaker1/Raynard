@@ -5044,7 +5044,9 @@ end
 
 ----------------------------------------------------------------
 -- AVATAR VIEWPORT
+-- Fixed rotation + auto rotation + rig-safe joints
 ----------------------------------------------------------------
+
 function Section:AddAvatarViewport(configuration)
 	configuration = configuration or {}
 
@@ -5079,10 +5081,14 @@ function Section:AddAvatarViewport(configuration)
 	corner(viewport, app.Config.Radius.Control)
 
 	local world = Instance.new("WorldModel")
+	world.Name = "AvatarWorld"
 	world.Parent = viewport
 
 	local camera = Instance.new("Camera")
+	camera.Name = "AvatarCamera"
+	camera.FieldOfView = configuration.FieldOfView or 70
 	camera.Parent = viewport
+
 	viewport.CurrentCamera = camera
 
 	local id = app:_MakeId(
@@ -5098,11 +5104,14 @@ function Section:AddAvatarViewport(configuration)
 		configuration
 	)
 
-	local model = nil
+	------------------------------------------------------------
+	-- STATE
+	------------------------------------------------------------
 
-	------------------------------------------------------------
-	-- ROTATION
-	------------------------------------------------------------
+	local model = nil
+	local basePivot = nil
+
+	local loadGeneration = 0
 
 	local autoRotate =
 		configuration.AutoRotate == true
@@ -5111,32 +5120,162 @@ function Section:AddAvatarViewport(configuration)
 		tonumber(configuration.RotationSpeed)
 		or 35
 
-	local fixedRotation =
-		tonumber(configuration.FixedRotation)
-		or 0
+	-- Extra Y rotation used by AutoRotate / SetRotation.
+	local rotation = 0
 
-	local rotation = fixedRotation
+	------------------------------------------------------------
+	-- FIXED ROTATION
+	--
+	-- Supports:
+	--
+	-- FixedRotation = 180
+	--
+	-- OR:
+	--
+	-- FixedRotation = Vector3.new(0, 180, 0)
+	------------------------------------------------------------
 
-	local function normalizeRotation(value)
-		value = tonumber(value) or 0
-		return value % 360
+	local fixedRotation
+
+	if typeof(configuration.FixedRotation) == "Vector3" then
+		fixedRotation = configuration.FixedRotation
+	else
+		fixedRotation = Vector3.new(
+			tonumber(configuration.FixedRotationX) or 0,
+			tonumber(configuration.FixedRotation) or 0,
+			tonumber(configuration.FixedRotationZ) or 0
+		)
 	end
 
+	------------------------------------------------------------
+	-- HELPERS
+	------------------------------------------------------------
+
+	local function normalizeDegrees(value)
+		value = tonumber(value) or 0
+
+		value %= 360
+
+		if value < 0 then
+			value += 360
+		end
+
+		return value
+	end
+
+	local function clearModel()
+		loadGeneration += 1
+
+		if model then
+			model:Destroy()
+			model = nil
+		end
+
+		basePivot = nil
+	end
+
+	------------------------------------------------------------
+	-- RIG SETUP
+	------------------------------------------------------------
+
+	local function prepareRig(rig)
+		local humanoid =
+			rig:FindFirstChildOfClass("Humanoid")
+
+		local root =
+			rig:FindFirstChild("HumanoidRootPart")
+
+		--------------------------------------------------------
+		-- IMPORTANT:
+		-- DO NOT ANCHOR EVERY BODY PART.
+		--------------------------------------------------------
+
+		for _, object in ipairs(rig:GetDescendants()) do
+			if object:IsA("BasePart") then
+				object.CanCollide = false
+				object.CanTouch = false
+
+				-- Leave Anchored alone for every limb.
+				if object ~= root then
+					object.Anchored = false
+				end
+			end
+		end
+
+		--------------------------------------------------------
+		-- Anchor ONLY the HumanoidRootPart.
+		--
+		-- The existing Motor6Ds keep:
+		--
+		-- Neck
+		-- RootJoint
+		-- Waist
+		-- Shoulders
+		-- Hips
+		-- Arms
+		-- Legs
+		-- Accessories
+		--
+		-- attached normally.
+		--------------------------------------------------------
+
+		if root then
+			root.Anchored = true
+
+			if not rig.PrimaryPart then
+				rig.PrimaryPart = root
+			end
+		end
+
+		if humanoid then
+			humanoid.AutoRotate = false
+			humanoid.BreakJointsOnDeath = false
+
+			pcall(function()
+				humanoid.DisplayDistanceType =
+					Enum.HumanoidDisplayDistanceType.None
+			end)
+		end
+
+		return root
+	end
+
+	------------------------------------------------------------
+	-- ROTATION
+	------------------------------------------------------------
+
 	local function applyRotation()
-		if not model or not model.Parent then
+		if not model
+			or not model.Parent
+			or not basePivot
+		then
 			return
 		end
 
-		rotation = normalizeRotation(rotation)
+		local x =
+			math.rad(fixedRotation.X)
 
-		local pivot = model:GetPivot()
+		local y =
+			math.rad(
+				fixedRotation.Y
+				+ rotation
+			)
+
+		local z =
+			math.rad(fixedRotation.Z)
+
+		--------------------------------------------------------
+		-- PivotTo moves the ENTIRE rig together.
+		--
+		-- We never touch individual body-part CFrames.
+		--------------------------------------------------------
 
 		model:PivotTo(
-			CFrame.new(pivot.Position)
+			basePivot
 				* CFrame.Angles(
-					0,
-					math.rad(rotation),
-					0
+					x,
+					y,
+					z
 				)
 		)
 	end
@@ -5145,37 +5284,54 @@ function Section:AddAvatarViewport(configuration)
 	-- CAMERA
 	------------------------------------------------------------
 
-	local function frameAvatar()
-		if not model then
+	local function frameModel()
+		if not model
+			or not model.Parent
+		then
 			return
 		end
 
-		local cf, size = model:GetBoundingBox()
+		local cf, size =
+			model:GetBoundingBox()
+
+		local maxSize =
+			math.max(
+				size.X,
+				size.Y,
+				size.Z
+			)
+
+		local zoom =
+			tonumber(configuration.Zoom)
+			or 1.8
+
+		local distance =
+			math.max(
+				4,
+				maxSize * zoom
+			)
+
+		local verticalOffset =
+			tonumber(configuration.VerticalOffset)
+			or 0.05
 
 		local target =
 			cf.Position
 			+ Vector3.new(
 				0,
-				size.Y * 0.05,
+				size.Y * verticalOffset,
 				0
 			)
 
-		local distance =
-			configuration.Zoom
-			or math.max(
-				4,
-				size.Magnitude * 0.75
-			)
-
 		camera.FieldOfView =
-			configuration.FieldOfView
+			tonumber(configuration.FieldOfView)
 			or 70
 
-		camera.CFrame = CFrame.new(
-			cf.Position
+		camera.CFrame = CFrame.lookAt(
+			target
 				+ Vector3.new(
 					0,
-					size.Y * 0.1,
+					size.Y * 0.05,
 					distance
 				),
 
@@ -5184,14 +5340,21 @@ function Section:AddAvatarViewport(configuration)
 	end
 
 	------------------------------------------------------------
-	-- PLAYER
+	-- SET PLAYER
 	------------------------------------------------------------
 
 	local function set(target, silent)
+
+		--------------------------------------------------------
+		-- Accept UserId if that player is in the server.
+		--------------------------------------------------------
+
 		if typeof(target) == "number" then
-			for _, p in ipairs(Players:GetPlayers()) do
-				if p.UserId == target then
-					target = p
+			for _, candidate in ipairs(
+				Players:GetPlayers()
+			) do
+				if candidate.UserId == target then
+					target = candidate
 					break
 				end
 			end
@@ -5201,53 +5364,98 @@ function Section:AddAvatarViewport(configuration)
 			typeof(target) == "Instance"
 			and target:IsA("Player")
 		) then
+
 			return player
 		end
 
 		player = target
 
-		if model then
-			model:Destroy()
-			model = nil
-		end
+		clearModel()
+
+		--------------------------------------------------------
+		-- Protect against changing players while the avatar
+		-- request is still loading.
+		--------------------------------------------------------
+
+		loadGeneration += 1
+
+		local thisGeneration =
+			loadGeneration
 
 		task.spawn(function()
-			local ok, created = pcall(function()
-				return Players:CreateHumanoidModelFromUserId(
-					player.UserId
-				)
-			end)
+
+			local ok, created =
+				pcall(function()
+
+					return Players:
+						CreateHumanoidModelFromUserId(
+							player.UserId
+						)
+
+				end)
 
 			if not ok
 				or not created
-				or not world.Parent
 			then
 				return
 			end
 
+			----------------------------------------------------
+			-- Player was changed again while loading.
+			----------------------------------------------------
+
+			if thisGeneration ~= loadGeneration
+				or control._destroyed
+				or not world.Parent
+			then
+
+				created:Destroy()
+				return
+			end
+
 			model = created
+
+			model.Name =
+				"RaynardAvatar_"
+				.. tostring(player.UserId)
+
 			model.Parent = world
 
 			----------------------------------------------------
-			-- Make viewport avatar non-physical
+			-- Keep original rig joints.
 			----------------------------------------------------
 
-			for _, object in ipairs(model:GetDescendants()) do
-				if object:IsA("BasePart") then
-					object.Anchored = true
-					object.CanCollide = false
-					object.CanTouch = false
-					object.CanQuery = false
-				end
-			end
+			prepareRig(model)
 
-			rotation = fixedRotation
+			----------------------------------------------------
+			-- Save ONE stable original pivot.
+			--
+			-- Every rotation is calculated relative to this.
+			----------------------------------------------------
+
+			basePivot =
+				model:GetPivot()
+
+			rotation = 0
 
 			applyRotation()
-			frameAvatar()
+
+			----------------------------------------------------
+			-- Wait one frame so accessories/body scaling have
+			-- settled before calculating the camera.
+			----------------------------------------------------
+
+			RunService.Heartbeat:Wait()
+
+			if model
+				and model.Parent
+			then
+				frameModel()
+			end
 		end)
 
 		if not silent then
+
 			self:_Emit(
 				control,
 				"AvatarChanged",
@@ -5266,47 +5474,53 @@ function Section:AddAvatarViewport(configuration)
 	end
 
 	------------------------------------------------------------
-	-- AUTO ROTATE
+	-- AUTO ROTATION
 	------------------------------------------------------------
 
-	local rotationConnection =
-		RunService.RenderStepped:Connect(function(dt)
+	control:_Connect(
+		RunService.RenderStepped,
+		function(deltaTime)
+
 			if not autoRotate then
 				return
 			end
 
-			if not model or not model.Parent then
+			if not model
+				or not model.Parent
+			then
 				return
 			end
 
-			rotation += dt * rotationSpeed
+			rotation +=
+				deltaTime
+				* rotationSpeed
+
+			if rotation >= 360 then
+				rotation %= 360
+			end
 
 			applyRotation()
-		end)
-
-	table.insert(
-		control._connections,
-		rotationConnection
+		end
 	)
 
 	------------------------------------------------------------
-	-- CONTROL API
+	-- NORMAL CONTROL GET / SET
 	------------------------------------------------------------
 
-	control._getter = function()
-		return player
-	end
+	control._getter =
+		function()
+			return player
+		end
 
 	control._setter = set
 
-	function control:SetAutoRotate(state)
-		autoRotate = state == true
+	------------------------------------------------------------
+	-- ROTATION API
+	------------------------------------------------------------
 
-		self.App:_Emit(
-			"AvatarAutoRotateChanged",
-			self.Id,
-			autoRotate
-		)
+	function control:SetAutoRotate(state)
+		autoRotate =
+			state == true
 
 		return self
 	end
@@ -5316,9 +5530,12 @@ function Section:AddAvatarViewport(configuration)
 	end
 
 	function control:SetRotationSpeed(speed)
-		rotationSpeed =
+		local value =
 			tonumber(speed)
-			or rotationSpeed
+
+		if value then
+			rotationSpeed = value
+		end
 
 		return self
 	end
@@ -5327,24 +5544,13 @@ function Section:AddAvatarViewport(configuration)
 		return rotationSpeed
 	end
 
-	function control:SetFixedRotation(degrees)
-		fixedRotation =
-			normalizeRotation(degrees)
-
-		rotation = fixedRotation
-
-		applyRotation()
-
-		return self
-	end
-
-	function control:GetFixedRotation()
-		return fixedRotation
-	end
+	------------------------------------------------------------
+	-- CURRENT Y ROTATION
+	------------------------------------------------------------
 
 	function control:SetRotation(degrees)
 		rotation =
-			normalizeRotation(degrees)
+			normalizeDegrees(degrees)
 
 		applyRotation()
 
@@ -5355,16 +5561,57 @@ function Section:AddAvatarViewport(configuration)
 		return rotation
 	end
 
-	function control:ResetRotation()
-		rotation = fixedRotation
+	------------------------------------------------------------
+	-- FIXED ROTATION
+	------------------------------------------------------------
+
+	function control:SetFixedRotation(value)
+
+		if typeof(value) == "Vector3" then
+
+			fixedRotation =
+				value
+
+		else
+
+			fixedRotation =
+				Vector3.new(
+					fixedRotation.X,
+					tonumber(value)
+						or fixedRotation.Y,
+					fixedRotation.Z
+				)
+
+		end
 
 		applyRotation()
 
 		return self
 	end
 
+	function control:GetFixedRotation()
+		return fixedRotation
+	end
+
+	------------------------------------------------------------
+	-- RESET TO CONFIGURED FIXED ROTATION
+	------------------------------------------------------------
+
+	function control:ResetRotation()
+
+		rotation = 0
+
+		applyRotation()
+
+		return self
+	end
+
+	------------------------------------------------------------
+	-- CAMERA / MODEL
+	------------------------------------------------------------
+
 	function control:Frame()
-		frameAvatar()
+		frameModel()
 
 		return self
 	end
@@ -5379,6 +5626,10 @@ function Section:AddAvatarViewport(configuration)
 
 	function control:GetCamera()
 		return camera
+	end
+
+	function control:GetWorldModel()
+		return world
 	end
 
 	------------------------------------------------------------
