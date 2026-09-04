@@ -13,5 +13,7 @@ if not isfolder("Rayward") then
 	writefile("Rayward/src/visual.luau", game:HttpGet("https://raw.githubusercontent.com/cwcodemaker1/Raynard/main/src/visual.luau"))
 	writefile("Rayward/src/advanced.luau", game:HttpGet("https://raw.githubusercontent.com/cwcodemaker1/Raynard/main/src/advanced.luau"))
 	writefile("Rayward/src/feat.luau", game:HttpGet("https://raw.githubusercontent.com/cwcodemaker1/Raynard/main/src/feat.luau"))
-  writefile("Rayward/src/init.luau", game:HttpGet("https://raw.githubusercontent.com/cwcodemaker1/Raynard/main/src/init.luau"))
+	writefile("Rayward/src/init.luau", game:HttpGet("https://raw.githubusercontent.com/cwcodemaker1/Raynard/main/src/init.luau"))
 end
+
+local Raynard = loadstring(readfile("Rayward/parsar.luau"))()
