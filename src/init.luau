@@ -1,0 +1,17 @@
+if not isfolder("Rayward") then
+	makefolder("Rayward")
+	writefile("Rayward/parsar.luau", game:HttpGet("https://raw.githubusercontent.com/cwcodemaker1/Raynard/main/parser.luau"))
+	writefile("Rayward/manifest.luau", game:HttpGet("https://raw.githubusercontent.com/cwcodemaker1/Raynard/main/manifest.luau"))
+	makefolder("Rayward/src")
+	writefile("Rayward/src/core.luau", game:HttpGet("https://raw.githubusercontent.com/cwcodemaker1/Raynard/main/src/core.luau"))
+	writefile("Rayward/src/window.luau", game:HttpGet("https://raw.githubusercontent.com/cwcodemaker1/Raynard/main/src/window.luau"))
+	writefile("Rayward/src/control.luau", game:HttpGet("https://raw.githubusercontent.com/cwcodemaker1/Raynard/main/src/control.luau"))
+	writefile("Rayward/src/controlcolor.luau", game:HttpGet("https://raw.githubusercontent.com/cwcodemaker1/Raynard/main/src/controlcolor.luau"))
+	writefile("Rayward/src/framework.luau", game:HttpGet("https://raw.githubusercontent.com/cwcodemaker1/Raynard/main/src/framework.luau"))
+	writefile("Rayward/src/inputs.luau", game:HttpGet("https://raw.githubusercontent.com/cwcodemaker1/Raynard/main/src/inputs.luau"))
+	writefile("Rayward/src/data.luau", game:HttpGet("https://raw.githubusercontent.com/cwcodemaker1/Raynard/main/src/data.luau"))
+	writefile("Rayward/src/visual.luau", game:HttpGet("https://raw.githubusercontent.com/cwcodemaker1/Raynard/main/src/visual.luau"))
+	writefile("Rayward/src/advanced.luau", game:HttpGet("https://raw.githubusercontent.com/cwcodemaker1/Raynard/main/src/advanced.luau"))
+	writefile("Rayward/src/feat.luau", game:HttpGet("https://raw.githubusercontent.com/cwcodemaker1/Raynard/main/src/feat.luau"))
+  writefile("Rayward/src/init.luau", game:HttpGet("https://raw.githubusercontent.com/cwcodemaker1/Raynard/main/src/init.luau"))
+end
