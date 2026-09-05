@@ -1,9 +1,3 @@
--- Raynard fragment: 80_controls_advanced.luau
--- Loaded by parser.luau; do not execute this fragment alone.
-
-----------------------------------------------------------------
--- COLOR SWATCHES
-----------------------------------------------------------------
 
 function Section:AddColorSwatches(configuration)
     configuration = configuration or {}
@@ -38,10 +32,6 @@ function Section:AddColorSwatches(configuration)
     return app:_Register(control)
 end
 
-----------------------------------------------------------------
--- FONT SELECTOR
-----------------------------------------------------------------
-
 function Section:AddFontSelector(configuration)
     configuration = configuration or {}
     local fonts = configuration.Fonts or {
@@ -55,10 +45,6 @@ function Section:AddFontSelector(configuration)
     configuration.Callback = function(font, control) if original then original(font, control) end end
     local control = self:AddDropdown(configuration) control.Kind = "FontSelector" return control
 end
-
-----------------------------------------------------------------
--- ENUM SELECTOR
-----------------------------------------------------------------
 
 function Section:AddEnumSelector(configuration)
     configuration = configuration or {}
@@ -118,10 +104,6 @@ end
 function Section:AddVector2Input(configuration) return self:_AddVectorInput(configuration, 2, "Vector2Input") end
 function Section:AddVector3Input(configuration) return self:_AddVectorInput(configuration, 3, "Vector3Input") end
 
-----------------------------------------------------------------
--- UDIM INPUT
-----------------------------------------------------------------
-
 function Section:AddUDimInput(configuration)
     configuration = configuration or {}
     local app = self.App
@@ -144,9 +126,6 @@ function Section:AddUDimInput(configuration)
     return app:_Register(control)
 end
 
-----------------------------------------------------------------
--- UDIM2 INPUT
-----------------------------------------------------------------
 
 function Section:AddUDim2Input(configuration)
     configuration = configuration or {}
