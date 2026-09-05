@@ -1,0 +1,5 @@
+local Raynard=loadstring(readfile("Rayward/parser.luau"))()
+local App=Raynard({Name="RaynardLocalExample",Title="Raynard",Subtitle="Local Example"})
+local Tab=App:AddTab("Main")
+local Section=Tab:AddSection("Example")
+Section:AddButton({Text="Test",Callback=function() App:Notify({Title="Raynard",Text="Working",Type="Success"}) end})

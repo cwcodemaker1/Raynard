@@ -1,0 +1,6 @@
+local Raynard=loadstring(game:HttpGet("https://raw.githubusercontent.com/cwcodemaker1/Raynard/main/init.luau"))()
+local App=Raynard({Name="RaynardExample",Title="Raynard",Subtitle="Revamp Example"})
+local Tab=App:AddTab("Main")
+local Section=Tab:AddSection("Example")
+Section:AddLabel("Raynard loaded")
+Section:AddToggle({Id="ExampleToggle",Text="Example Toggle",Default=false})
