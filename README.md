@@ -1,4 +1,4 @@
-# Raynard Revamp
+# Raynard 
 
 Raynard is split into small ordered Luau source files and assembled by `parser.luau`. The public entrypoint is `init.luau`.
 
